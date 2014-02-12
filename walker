@@ -1,0 +1,1802 @@
+#!/bin/bash
+
+enl=$(tput sgr0)$(tput rev)$(tput setaf 1)  #stupid enemies colors.  not active yet
+esl=$(tput sgr0)$(tput rev)$(tput setaf 5)  #smart enemy colors.  not active yet
+egl=$(tput sgr0)$(tput rev)$(tput setaf 3) #goalie enemy colors.
+hro=$(tput sgr0)$(tput rev)$(tput setaf 4) #hero's colors
+ztl=$(tput sgr0)$(tput setab 7)$(tput setaf 0) #zero or less tile color
+ded=$(tput sgr0)$(tput setab 1) #dead hero colors
+red=$(tput sgr0)$(tput setaf 1) #dead hero colors
+rst=$(tput sgr0) #reset the text colors and boldness
+xit=$(tput sgr0)$(tput setab 6)    # background for exits
+ent=$(tput sgr0)$(tput setab 2)	# background for entrances
+bgc=$(tput sgr0)$(tput setab 7)	#background color for tiles
+
+walkerdir="."
+
+eastvar="d"
+westvar="a"
+northvar="w"
+southvar="s"
+exitvar="e"
+waitvar=""
+
+menuvar="1"
+resetvar="3"
+nextlvlvar="5"
+quitvar="0"
+
+absolute() {
+if [ $1 -gt 0 ]
+then
+result=$1
+else
+result=$((-$1))
+fi
+}
+
+maxmag() {
+absolute $1
+a1=$result
+absolute $2
+a2=$result
+if [ $a1 -gt $a2 ]
+then
+result=1
+elif [ $a1 -lt $a2 ]
+then
+result=2
+else
+result=0
+fi
+}
+
+member() {
+guy=$1 ##test to see if this guy is in list $2 $3 ...
+i1=0
+shift ##move all $ over
+while [ $# -gt 0 ]
+do
+	if [ $guy -eq $1 ]
+	then
+		mind=$i1
+		return
+	fi
+	shift
+	((i1++))
+done
+mind=-1
+return
+}
+
+membertest() {
+guy=$1 ##test to see if this guy is in list $2 $3 ...
+i1=0
+shift ##move all $ over
+while [ $# -gt 0 ]
+do
+	if [ $guy -eq $1 ]
+	then
+		result=1
+		return
+	fi
+	shift
+	((i1++))
+done
+result=0
+return
+}
+
+
+offset() {
+ypos1=$(expr $1 / $g)
+xpos1=$(expr $1 - $ypos1 "*" $g)
+ypos2=$(expr $2 / $g)
+xpos2=$(expr $2 - $ypos2 "*" $g)
+xdif=$(($xpos1-$xpos2))
+ydif=$(($ypos1-$ypos2))
+}
+
+dumbxmove() {
+  ##x enemies move in x direction when confronted with equal choices
+	if [ $xdif -gt 0 ]
+	then #move east
+		pt=$(($1 + 1)) ##enemy thinks he will move here (possible tile)
+		offset $pt $1 #make sure he can move here
+		if [ $xdif -eq 1 ]
+		then #this is not a wall, can try to move right.
+			if [ ${mc[$pt]} -gt 0 ] ##if the enemy thinks he wont die moving there...
+			then
+				result=${me[$1]} #he will actually go wherever this tile takes him
+			else
+				result=$1 ##he doesn't want to die
+			fi
+		else
+			result=$1 ##he can't move into wall
+		fi
+	else ##time to move west
+		pt=$(($1 - 1)) ##enemy thinks he will move here (possible tile)
+		offset $1 $pt
+		if [ $xdif -eq 1 ]
+		then #this is not a wall, can try to move left.
+			if [ ${mc[$pt]} -gt 0 ] ##if the enemy thinks he wont die moving there...
+			then
+				result=${mw[$1]}
+			else
+				result=$1
+			fi
+		else
+			result=$1
+		fi
+	fi
+}
+
+dumbymove() {
+	if [ $ydif -lt 0 ]
+	then #move north
+		pt=$(($1 - $g)) ##enemy thinks he will move here (possible tile)
+		offset $1 $pt
+		if [ $ydif -eq 1 ]
+		then #this is not a wall, can try to move up
+			if [ ${mc[$pt]} -gt 0 ] ##if the enemy thinks he wont die moving there...
+			then
+				result=${mn[$1]}	
+			else
+				result=$1
+			fi
+		else
+			result=$1
+		fi
+	else ##time to move south
+		pt=$(($1 + $g)) ##enemy thinks he will move here (possible tile)
+		offset $pt $1
+		if [ $ydif -eq 1 ]
+		then #this is not a wall, can try to move down.
+			if [ ${mc[$pt]} -gt 0 ] ##if the enemy thinks he wont die moving there...
+			then
+				result=${ms[$1]}										
+			else
+				result=$1
+			fi
+		else
+			result=$1
+		fi
+	fi
+}
+
+smartxmove() {
+	objective=$2
+	oldpos=$1
+	dumbxmove $1
+	if [ $oldpos -eq $result ] ##if we are stuck in x
+	then ##try moving in y direction
+		offset $objective $oldpos ##find offset from hero's actual location
+		if [ $ydif -ne 0 ] ##if there is a y difference, move
+		then
+			dumbymove $oldpos
+		else #otherwise don't.
+			result=$1
+		fi
+	fi
+}
+
+smartymove() {
+	oldpos=$1
+	objective=$2
+	dumbymove $1
+	if [ $oldpos -eq $result ] ##if we are stuck in y
+	then ##try moving in x direction
+		offset $objective $oldpos ##find offset from hero
+		if [ $xdif -ne 0 ] ##if there is an x difference, move
+		then
+			dumbxmove $oldpos
+		else ##otherwise don't
+			result=$1
+		fi
+	fi
+}
+
+
+duel() {
+ #$1 = previous weak man position
+ #$2 = current weak man position
+ #$3 = previous emy position
+ #$4 = current emy position
+	if [[ $1 -eq $4 && $2 -eq $3 ]] ##each destination matches the other's starting point
+	then ##push the player back to where he was, let the enemy destroy him at home.
+		result=1
+	else
+		result=0
+	fi
+	return
+}
+
+sumc() {
+result=0
+flag=0
+for c1 in ${mc[*]} 
+do
+	if [ $c1 -gt 0 ]
+	then ##only add in numbers ≥ 0.
+	
+	result=$(expr $result + $c1)
+	elif [ $c1 -lt 0 ]
+	then
+		flag=1
+	fi
+done
+return
+}
+
+##these are the functions which we use to destroy entrances and exits after they are uzed
+remein() {
+#remove first eingang from list
+l1=${#ein[*]}
+((l1--))
+i1=0
+while [ $i1 -lt $l1 ]
+do
+ein[$i1]=${ein[$(expr $i1 + 1)]}
+tim[$i1]=${tim[$(expr $i1 + 1)]}
+((i1++))
+done
+unset ein[$i1]
+unset tim[$i1]
+}
+
+timerset() {
+	nextim=${tim[0]}
+	if [ $nextim -eq 0 ] ##no timing restrictions on movement
+	then
+		newt=0 ##next turn doesn't matter.
+		killifover=0 ##kill player if over 
+		killifunder=0
+	elif [ $nextim -gt 0 ] ##positive timing restriction:  must make it within $nextim turns.
+	then
+		killifover=1
+		killifunder=0
+		newt=$(expr $t + $nextim)
+	else ##negative timing restriction:  must take at least $nextim turns.
+		killifover=0
+		killifunder=1
+		newt=$(expr $t - $nextim)
+	fi
+}
+
+remaus() {
+#remove item in index $1 from exit list
+i1=$1
+l1=${#aus[*]}
+((l1--))
+while [ $i1 -lt $l1 ]
+do
+aus[$i1]=${aus[$(expr $i1 + 1)]}
+((i1++))
+done
+unset aus[$i1]
+}
+
+remxen() {
+#remove item in index $1 from xen list
+i1=$1
+((xenc--))
+while [ $i1 -lt $xenc ]
+do
+xen[$i1]=${xen[$(expr $i1 + 1)]}
+((i1++))
+done
+unset xen[$i1]
+unset pxen[$i1]
+}
+
+remyen() {
+#remove item in index $1 from yen list
+i1=$1
+((yenc--))
+while [ $i1 -lt $yenc ]
+do
+yen[$i1]=${yen[$(expr $i1 + 1)]}
+((i1++))
+done
+unset yen[$i1]
+unset pyen[$i1]
+}
+
+remxsn() {
+#remove item in index $1 from xsn list
+i1=$1
+((xsnc--))
+while [ $i1 -lt $xsnc ]
+do
+xsn[$i1]=${xsn[$(expr $i1 + 1)]}
+((i1++))
+done
+unset xsn[$i1]
+unset pxsn[$i1]
+}
+
+remysn() {
+#remove item in index $1 from ysn list
+i1=$1
+((ysnc--))
+while [ $i1 -lt $ysnc ]
+do
+ysn[$i1]=${ysn[$(expr $i1 + 1)]}
+((i1++))
+done
+unset ysn[$i1]
+unset pysn[$i1]
+}
+
+remxgn() {
+#remove item in index $1 from xgn list
+i1=$1
+((xgnc--))
+while [ $i1 -lt $xgnc ]
+do
+xgn[$i1]=${xgn[$(expr $i1 + 1)]} ##move positions down
+xgw[$i1]=${xgw[$(expr $i1 + 1)]} ##move winning exits down
+((i1++))
+done
+unset xgn[$i1]
+unset xgw[$i1]
+unset pxgn[$i1]
+}
+
+remygn() {
+#remove item in index $1 from ygn list
+i1=$1
+((ygnc--))
+while [ $i1 -lt $ygnc ]
+do
+ygn[$i1]=${ygn[$(expr $i1 + 1)]}
+ygw[$i1]=${ygw[$(expr $i1 + 1)]} ##move winning exits down
+((i1++))
+done
+unset ygn[$i1]
+unset ygw[$i1]
+unset pygn[$i1]
+}
+
+nextlvl() {
+
+((lvlnum++))
+lvlfile="$walkerdir/lvl/$lvlnum"
+if [ -f $lvlfile ]
+then ##if such a file exists, then let's play it!
+	play=0 ##stop current gameplay
+else
+	echo "You have reached the end of the dungeons!"
+	echo "Make your own level if you want!"
+	play=0
+	notquit=0
+fi
+	
+}
+
+accomplished() {
+if [[ $xkillcount -gt 0 || $ykillcount -gt 0 || $xskillcount -gt 0 || $yskillcount -gt 0 || $xgkillcount -gt 0 || $ygkillcount -gt 0 ]]
+then
+	echo "$(tput smul)Accomplishments$(tput rmul)"
+	if [[ $xkillcount -gt 0 || $ykillcount -gt 0 ]]
+	then
+		echo -n "Destroyed"
+		if [ $xkillcount -eq 1 ]
+		then
+			echo -n ": $xkillcount X-feisty "
+		elif [ $xkillcount -gt 1 ]
+		then
+			echo -n ": $xkillcount X-feisties "
+		fi
+		if [ $ykillcount -eq 1 ]
+		then
+			echo -n ": $ykillcount Y-feisty "
+		elif [ $ykillcount -gt 1 ]
+		then
+			echo -n ": $ykillcount Y-feisties "
+		fi
+		echo
+	fi
+	
+	if [[ $xskillcount -gt 0 || $yskillcount -gt 0 ]]
+	then
+		echo -n "Outwitted"
+		if [ $xskillcount -eq 1 ]
+		then
+			echo -n ": $xskillcount X-psycher "
+		elif [ $xskillcount -gt 1 ]
+		then
+			echo -n ": $xskillcount X-psychers "
+		fi
+		if [ $yskillcount -eq 1 ]
+		then
+			echo -n ": $yskillcount Y-psycher "
+		elif [ $yskillcount -gt 1 ]
+		then
+			echo -n ": $yskillcount Y-psychers "
+		fi
+		echo
+	fi
+	
+	if [[ $xgkillcount -gt 0 || $ygkillcount -gt 0 ]]
+	then
+		echo -n "One-upped"
+		if [ $xgkillcount -eq 1 ]
+		then
+			echo -n ": $xgkillcount X-goalie "
+		elif [ $xgkillcount -gt 1 ]
+		then
+			echo -n ": $xgkillcount X-goalies "
+		fi
+		if [ $ygkillcount -eq 1 ]
+		then
+			echo -n ": $ygkillcount Y-goalie "
+		elif [ $ygkillcount -gt 1 ]
+		then
+			echo -n ": $ygkillcount Y-goalies "
+		fi
+		echo
+	fi
+	echo
+fi
+
+}
+
+notquit=1
+menu=1
+clear
+echo "${rst}DUNGEON WALKER.  written by low"
+echo "Find your way from the entrances (green) to the exits (blue)."
+echo "You are only allowed to step foot in each room so many times..."
+echo "Do not let your blueness be vanquished by jumping on a zero tile!"
+echo "Or is there some worse fate that awaits in dungeons 10+ ?!"
+echo "There is only one question you must answer. Are you courageous"
+echo "enough to zero out every dungeon?"
+echo
+echo "If yes, acquaint yourself with the controls!"
+echo
+echo "In game:"
+echo "${northvar}/${westvar}/${southvar}/${eastvar} - move up/left/down/right"
+echo "$exitvar - used to exit when on a blue tile"
+if [ -z $waitvar ]
+then
+	echo "spacebar/return - used to stay still one turn"
+else
+	echo "$waitvar - used to stay still one turn"
+fi
+echo "$resetvar - to reset level"
+echo "$nextlvlvar - for next level"
+echo "$menuvar - return to level select"
+echo "$quitvar - to quit."
+echo
+##lowest loop.  comes back to menu to change level
+while [ $notquit -eq 1 ]
+do
+echo "You arrive at the main menu:"
+echo "Enter in a level to play, or 'q' to quit."
+echo -n "Make your choice: "
+read lvlnum
+
+if [ $lvlnum = "q" ]
+then
+	echo "May you find your bravery soon!"
+	notquit=0
+
+else ##it might be a level
+	lvlfile="$walkerdir/lvl/$lvlnum"
+
+	if [ -f $lvlfile ]
+	then
+		menu=0
+	else
+		echo "Not a legitimate dungeon, my friend!"
+		echo "You may enter 'quit' to quit."
+		echo
+	fi
+fi
+
+##mid range loop, for reseting level:
+while [[ $notquit -eq 1 && menu -eq 0 ]] ##while the player doesn't quit, keep reseting the level
+do
+
+
+i=0 #read in the level contents from the file
+for line in $(< $lvlfile);do
+level[(($i))]=$line
+i=($i+1)
+done
+
+##now setup the level variables
+##first delete all old arrays, so they don't interfere.  especially important for ein/ausgangs and enemies
+unset me
+unset mn
+unset mw
+unset ms
+unset mc
+unset ein
+unset aus
+unset pxen
+unset pyen
+unset xen
+unset yen
+unset xsn
+unset ysn
+unset pxsn
+unset pysn
+unset xgn
+unset pxgn
+unset ygn
+unset pygn
+unset xgw
+unset ygw
+unset tim
+
+startindex=0
+g=${level[$((startindex++))]} #number of gridpoints on a side
+g2=$(expr $g "*" $g)
+
+for (( i=0; i<$g2; i++ ))
+do
+me[$i]=${level[$((startindex++))]} ##move east and wind up at this tile
+mn[$i]=${level[$((startindex++))]} ##move north
+mw[$i]=${level[$((startindex++))]} ##move west
+ms[$i]=${level[$((startindex++))]} ##the move south
+mc[$i]=${level[$((startindex++))]}  #number of steps available for each tile (move count)
+done
+mc[(($g2))]=0 ##this is useful for when enemies are moving; if that direction is a wall, 
+ ##the enemy won't move where there is zero step count.
+
+ausorder=${level[$((startindex++))]}
+reveall=${level[$((startindex++))]}
+e=${level[$((startindex++))]} ##number of entrances/exits
+
+for (( i=0; i<$e; i++ ))
+do
+ein[$i]=${level[$(expr $startindex + $i)]}
+aus[$i]=${level[$(expr $startindex + $i + $e)]}
+tim[$i]=${level[$(expr $startindex + $i + 2 "*" $e)]}
+done
+startindex=$(expr $startindex + 3 "*" $e)
+
+##INPUT ENEMIES.  
+##normal enemies "dumb"
+xenc=${level[$((startindex++))]} #number of x closers
+for (( i=0; i<$xenc; i++ ))
+do
+xen[$i]=${level[$((startindex++))]} ##locations of x closers
+done
+
+yenc=${level[$((startindex++))]} ##number of y closers
+for (( i=0; i<$yenc; i++ ))
+do
+yen[$i]=${level[$((startindex++))]} ##location of y closers
+done
+
+##psychic / smart enemies
+xsnc=${level[$((startindex++))]} #number of smart x closers
+for (( i=0; i<$xsnc; i++ ))
+do
+xsn[$i]=${level[$((startindex++))]} ##locations of x closers
+done
+
+ysnc=${level[$((startindex++))]} ##number of smart y closers
+for (( i=0; i<$ysnc; i++ ))
+do
+ysn[$i]=${level[$((startindex++))]} ##location of y closers
+done
+
+##gate closer enemies
+xgnc=${level[$((startindex++))]} #number of gate x closers
+for (( i=0; i<$xgnc; i++ ))
+do
+xgn[$i]=${level[$((startindex++))]} ##locations of x closers
+xgw[$i]=${aus[${level[$((startindex++))]}]} ##input index of ausgang, figure out which exit will make you lose
+done
+
+ygnc=${level[$((startindex++))]} ##number of gate y closers
+for (( i=0; i<$ygnc; i++ ))
+do
+ygn[$i]=${level[$((startindex++))]} ##location of y closers
+ygw[$i]=${aus[${level[$((startindex++))]}]} ##input index of ausgang, figure out which exit will make you lose
+done
+
+
+
+fastwin=${level[$startindex]}
+((startindex++))
+message=${level[@]:$startindex}  
+
+
+
+unset level #erase level array
+##NOW ALL LEVEL setup VARIABLES HAVE BEEN READ IN.  
+##now set the variables needed for gameplay
+t=0 ##turn is zero.
+timerset ##create a newt, which is when we check for timing issues.
+hp=${ein[0]} #hero position:  starts at first eingang
+life=1 #hero is alive
+#o=0 ##order.  which eingang/ausgang we're on.
+#rowblock ##holds information for each tile of the color
+play=1 ##run gameplay loop.  if life=0, player can only quit, reset, or menu.
+win=0 ##player has not won yet.
+xkillcount=0 ##number of feisty's destroyed
+ykillcount=0
+xskillcount=0 ##number of psycher's destoryed
+yskillcount=0
+xgkillcount=0 ##number of goalies doetry
+ygkillcount=0
+#destroyed
+#outwitted
+#one-upped
+##gameplay variables have been set up.
+
+##begin gameplay loop, which loops so long as we're "playing"
+while [ $play -eq 1 ]
+do
+php=$hp #previous hero position.  in case we run into an enemy in the hall.
+
+clear
+echo "${rst}Level $lvlnum"
+echo -e "$message"
+for (( i=0; i<$g; i++ ))
+do
+	##top line of hash marks
+	rowstring=""
+	
+	for (( j=0; j<$g; j++ ))
+	do
+		ct=$(expr $i "*" $g + $j)
+		member $ct ${ein[*]} ##is current tile a member of entrances?
+		cteino=$mind
+		#echo "cteino is "$cteino
+		member $ct ${aus[*]} ##member of exits?
+		ctauso=$mind
+		if [[ $cteino -eq -1 && $ctauso -eq -1 ]]
+		then ##regular old background color, not entrance or exit
+			rowstring=$rowstring"${bgc}#  #"
+			rowblock[$j]="${bgc} "
+		else
+			if [[ $cteino -eq -1 && $ctauso -ge 0 ]]
+			then ##not an entrance, but rather an exit
+				if [ $ausorder -eq 0 ] 
+				then ##order of exiting doesn't matter, draw the exit if you can pass through it
+					rowstring=$rowstring"${xit}#  #"
+					rowblock[$j]="${xit} "
+				else ##order does matter
+					if [ $reveall -eq 1 ]
+					then ##reveal all exits, but check whether this exit is currently up.
+						if [ 0 -eq $ctauso ]
+						then ##this exit is the next one you need to hit
+							rowstring=$rowstring"${xit}#--#"
+							rowblock[$j]="${xit}|"
+						else
+							rowstring=$rowstring"${xit}#  #"
+							rowblock[$j]="${xit} "							
+						fi
+					else ##reveal only the exit that is currently up
+						if [ 0 -eq $ctauso ]
+						then ##this exit is the next one you need to hit
+							rowstring=$rowstring"${xit}#  #"
+							rowblock[$j]="${xit} "	
+						else
+							rowstring=$rowstring"${bgc}#  #"
+							rowblock[$j]="${bgc} "	
+						fi
+					fi
+				fi
+			else
+				if [[ $cteino -ge 0 && $ctauso -eq -1 ]]
+				then ##this is an entrance, but not an exit
+					if [ $reveall -eq 1 ]
+					then ##reveal all entrances
+						rowstring=$rowstring"${ent}#  #"
+						rowblock[$j]="${ent} "	
+					else ##only reveal first entrance
+						if [ 0 -eq $cteino ]
+						then 
+							rowstring=$rowstring"${ent}#  #"
+							rowblock[$j]="${ent} "
+						else
+							rowstring=$rowstring"${bgc}#  #"
+							rowblock[$j]="${bgc} "
+						fi
+					fi
+				else ##this is both an entrance and an exit
+				
+					if [ $ausorder -eq 0 ] 
+					then ##order of exiting doesn't matter, draw the exit
+						if [ $reveall -eq 1 ]
+						then ##reveal all entrances
+							rowstring=$rowstring"${ent}#${xit}  ${ent}#"
+							rowblock[$j]="${xit} "	
+						else
+							if [ 0 -eq $cteino ]
+							then 
+								rowstring=$rowstring"${ent}#${xit}  ${ent}#"
+								rowblock[$j]="${xit} "	
+							else ##hide the fact that it's an entrance
+								rowstring=$rowstring"${xit}#  #"
+								rowblock[$j]="${xit} "	
+							fi
+						fi
+					else ##order does matter
+						if [ $reveall -eq 1 ]
+						then ##reveal all exits and entrances, but check whether this exit is currently up.
+							if [ 0 -eq $ctauso ]
+							then ##this exit is the next one you need to hit
+								rowstring=$rowstring"${ent}#${xit}--${ent}#"
+								rowblock[$j]="${xit}|"	
+							else
+								rowstring=$rowstring"${ent}#${xit}  ${ent}#"
+								rowblock[$j]="${xit} "	
+							fi
+						else ##reveal only the entrance and exit if it is currently up
+							if [[ 0 -eq $ctauso && 0 -eq $cteino ]]
+							then ##this entrance/exit pair is the next one you need to hit
+								rowstring=$rowstring"${ent}#${xit}  ${ent}#"
+								rowblock[$j]="${xit} "	
+							else
+								if [ 0 -eq $ctauso ]
+								then ##this exit is up, but entrance is not
+									rowstring=$rowstring"${xit}#  #"
+									rowblock[$j]="${xit} "	
+								else
+									if [ 0 -eq $cteino ]
+									then ##this entrance is up, but exit is not
+										rowstring=$rowstring"${ent}#  #"
+										rowblock[$j]="${ent} "	
+									else ##no exit or entrance at this time.
+										rowstring=$rowstring"${bgc}#  #"
+										rowblock[$j]="${bgc} "	
+									fi
+								fi
+							fi
+						fi
+					fi
+				fi
+			fi
+		fi
+	done
+	echo "$rowstring"
+	##middle line of numbers
+	for (( j=0; j<$g; j++ ))
+	do
+		echo -n "${rowblock[$j]}" ##add first block to left side
+		ct=$(expr $i "*" $g + $j) #current tile
+		num=(${mc[$ct]}) ##number on current tile
+		if [ $num -gt 99 ]
+		then
+			num1="C"
+			num2="#"
+		elif [ $num -ge 0 ] 
+		then
+			num1=$(expr $num / 10) ##ten's digit				
+			num2=$(expr $num - $num1 "*" 10) ##one's digit
+		elif [ $num -gt -10 ]
+		then
+			num1="-"
+			num2=$((-$num))
+		else
+			num1="-"
+			num2="#"
+		fi
+		if [ $hp -eq $ct ] #if hero is on the current tile
+		then
+			if [ $life -eq 1 ]
+			then ##if he's alive
+				echo -n "${hro}$num1$num2" ##change formatting if hero is on the tile
+			else
+				if [ $win -eq 0 ]
+				then #the hero has not won
+					echo -n "${ded}$num1$num2" ##change hero to dead
+				else ##hero has won, make him disappear
+					if [ $num -le 0 ] #if number is less than or equal to zero, make it yellow
+					then
+						echo -n "${ztl}$num1$num2"
+					else
+						echo -n "${rst}$num1$num2" ##reset colors
+					fi
+					
+				fi
+			fi
+		else
+			membertest $ct ${xen[*]} #is current tile a member of x enemies?
+			if [ $result -eq 1 ] ##if so,
+			then
+				echo -n "${enl}$num1" ##there is an x enemy here
+			else
+				membertest $ct ${xsn[*]} ##current tile a member of smart x enemies?
+				if [ $result -eq 1 ] ##if so
+				then
+					echo -n "${esl}$num1" ##there is a smart x enemy here					
+				else 
+					membertest $ct ${xgn[*]} ##current tile a member of gate closers?
+					if [ $result -eq 1 ]
+					then
+						echo -n "${egl}$num1"
+					else ##not an x enemy here
+						if [ $num -le 0 ] #if number is less than or equal to zero, make it yellow
+						then
+							echo -n "${ztl}$num1"
+						else
+							echo -n "${rst}$num1" ##reset colors
+						fi
+					fi
+				fi
+			fi
+			membertest $ct ${yen[*]} #is current tile a member of x enemies?
+			if [ $result -eq 1 ] ##if so,
+			then
+				echo -n "${enl}$num2" ##there is an y enemy here
+			else
+				member $ct ${ysn[*]} ##current tile a member of smart y enemies?
+				if [ $mind -ge 0 ] ##if so
+				then
+					echo -n "${esl}$num2" ##there is a smart y enemy here					
+				else 
+					membertest $ct ${ygn[*]} ##current tile a member of gate closers?
+					if [ $result -eq 1 ]
+					then
+						echo -n "${egl}$num2"
+					else ##not a y enemy here
+						if [ $num -le 0 ] #if number is less than or equal to zero, make it yellow
+						then
+							echo -n "${ztl}$num2"
+						else
+							echo -n "${rst}$num2" ##reset colors
+						fi
+					fi
+				fi
+			fi
+		fi
+		echo -n "${rowblock[$j]}" ##add in number and then right side
+	done
+	echo
+	##bottom line of hash marks
+	echo "$rowstring"
+done
+
+if [ $life -eq 1 ]
+then
+	message=""
+	echo -n "${rst}"
+	if [ $killifover -eq 1 ]
+	then
+		echo "${red}Exit by turn $newt.${rst}"
+	fi
+	if [ $killifunder -eq 1 ]
+	then
+		echo "${red}Do not exit before turn $newt.${rst}"
+	fi
+	echo "moves:  $t / $fastwin"
+	accomplished ##write out accomplishments
+	echo -n "What is your move? "
+
+	moved=0 #did we move last time?
+	read -n 1 move
+	case $move in
+	$eastvar) #move right
+	if [ ${me[$hp]} -lt $g2 ]
+	then
+	hp=${me[$hp]}
+	message="To the east!"
+	moved=1
+	else
+	message="Couldn't move east!"
+	fi
+	echo "move right";;
+
+	$northvar) #move up
+	if [ ${mn[$hp]} -lt $g2 ]
+	then
+	hp=${mn[$hp]}
+	message="It's gotten marginally colder."
+	moved=1
+	else
+	message="Couldn't move north!"
+	fi
+	echo "move up";;
+
+	$westvar) #move left
+	if [ ${mw[$hp]} -lt $g2 ]
+	then
+	hp=${mw[$hp]}
+	message="Westward across the plain."
+	moved=1
+	else
+	message="Couldn't move west!"
+	fi
+	echo "move left";;
+
+	$southvar) #move down
+	if [ ${ms[$hp]} -lt $g2 ]
+	then
+	hp=${ms[$hp]}
+	message="South it is."
+	moved=1
+	else
+	message="Couldn't move south!"
+	fi
+	echo "move down";;
+
+	$exitvar) #exit
+		member $hp ${aus[*]} #is the current place an ausgang?
+		maus=$mind #either 256, not an ausgang, or is some index of the ausgang location in aus, which makes it a possible exit
+		success=0 #false until proven true
+		if [ $maus -ge 0 ]
+		then
+			if [ $ausorder -eq 0 ]
+			then ##order doesn't matter
+				success=1 #we can exit here
+			else ##order matters, we can only exit if it's the zeroth one.
+				if [ $maus -eq 0 ]
+				then
+					success=1
+				fi
+			fi
+		fi
+		if [ $success -eq 1 ]
+		then
+			##destroy the corresponding ausgang.
+			remaus $maus
+			##destroy the previous entrance
+			remein
+			##check to see if you did it correctly:
+			if [[ $killifover -eq 1 && $t -gt $newt ]]
+			then
+				life=0
+				message="Took too long to exit!"
+			fi
+			if [[ $killifunder -eq 1 && $t -lt $newt ]]
+			then
+				life=0
+				message="Exitted before you were supposed to!"
+			fi
+			
+			if [ $life -eq 1 ]
+			then
+				timerset
+				#((o++)) ##increment the order
+				#test for 
+				if [ -z ${ein[0]} ] ##if there are no more entrances
+				then ##you've won!
+					win=1
+					life=0 ##stop player from moving
+					message="You win level !"
+				else 	##set yourself down at next entrance
+					hp=${ein[0]}
+					moved=1
+					message="You find yourself in a strange new place."
+				fi
+			fi
+		else
+			message="This is not an exit.  Yet."
+		fi
+	echo "exitted";;
+	$resetvar) play=0 ;; ##reset level
+	$menuvar) clear;play=0;menu=1 ;; ##menu
+	$nextlvlvar) nextlvl ;; #next level
+	$quitvar) play=0;notquit=0;echo ;; #quit
+	$waitvar) moved=1;message="You stood very still for a moment.";;
+	*) message="Invalid command";
+	esac
+
+	if [ $moved -eq 1 ]
+	then
+		#increment the turn
+		((t++)) 
+		
+		pxen=(${xen[*]}) ##previous xen position
+		pyen=(${yen[*]}) 
+		## maneuver the feisty enemies based on previous player position $php
+		for (( i=0; i<$xenc; i++ ))
+		do
+			offset $php ${xen[$i]} ##find offset from hero
+			maxmag $xdif $ydif ##find the maximum of x or y displacements from hero
+			#echo "result is $result"
+			if [ $result -le 1 ] ## 0 or 1, equal or x is bigger, move in x direction
+			then
+				dumbxmove ${xen[$i]}
+				xen[$i]=$result
+				duel $php $hp ${pxen[$i]} ${xen[$i]} ##if player tries to switch places with feisties, kill player
+				if [ $result -eq 1 ]; then hp=$php; fi
+			else ##more distance in y dir:  move in y direction
+				dumbymove ${xen[$i]}
+				xen[$i]=$result
+				duel $php $hp ${pxen[$i]} ${xen[$i]} ##if player tries to switch places with feisties, kill player
+				if [ $result -eq 1 ]; then hp=$php; fi
+			fi
+			
+		done
+		##now do y enemies
+		for (( i=0; i<$yenc; i++ ))
+		do
+			offset $php ${yen[$i]} ##find offset from hero
+			maxmag $xdif $ydif ##find the maximum of x or y displacements from hero
+			if [ $result -eq 1 ] ##then 
+			then  ##more distance in x direction
+				dumbxmove ${yen[$i]}
+				yen[$i]=$result
+				duel $php $hp ${pyen[$i]} ${yen[$i]} ##if player tries to switch places with feisties, kill player
+				if [ $result -eq 1 ]; then hp=$php; fi
+			else ##when confronted with equal possibilities, or extra y, move in y direction
+				dumbymove ${yen[$i]}
+				yen[$i]=$result
+				duel $php $hp ${pyen[$i]} ${yen[$i]} ##if player tries to switch places with feisties, kill player
+				if [ $result -eq 1 ]; then hp=$php; fi
+			fi
+			
+		done
+		pxsn=(${xsn[*]})
+		pysn=(${ysn[*]})
+		## maneuver the SMART enemies based on CURRENT player position $hp.  they ARE PSYCHIC!
+		for (( i=0; i<$xsnc; i++ ))
+		do
+			if [ $php -eq ${pxsn[$i]} ] ##if hero is wearing a X-psycher hat...
+			then
+				xsn[$i]=$hp ##it will follow hero
+			elif [ $hp -ne ${xsn[$i]} ] ##if hero does not run into us, then let us run into hero!
+			then ##move
+				offset $hp ${xsn[$i]} ##find offset from hero
+				maxmag $xdif $ydif ##find the maximum of x or y displacements from hero
+				#echo "result is $result"
+				if [ $result -le 1 ] ## 0 or 1, equal or x is bigger, move in x direction
+				then
+					smartxmove ${xsn[$i]} $hp
+					xsn[$i]=$result
+				else ##more distance in y dir:  move in y direction
+					smartymove ${xsn[$i]} $hp
+					xsn[$i]=$result
+				fi
+			fi
+		done
+		##now do SMARTy enemies
+		for (( i=0; i<$ysnc; i++ ))
+		do
+			if [ $php -eq ${pysn[$i]} ] ##if hero is wearing a Y-psycher hat...
+			then
+				ysn[$i]=$hp ##it will follow hero
+			elif [ $hp -ne ${ysn[$i]} ] ##if hero does not run into us, then let us run into hero!
+			then
+				offset $hp ${ysn[$i]} ##find offset from hero
+				maxmag $xdif $ydif ##find the maximum of x or y displacements from hero
+				#echo "result is $result"
+				if [ $result -eq 1 ] ##  x is bigger, move in x direction
+				then
+					smartxmove ${ysn[$i]} $hp
+					ysn[$i]=$result
+				else ##equal or more distance in y dir:  move in y direction
+					smartymove ${ysn[$i]} $hp
+					ysn[$i]=$result
+				fi
+				
+				
+			fi
+		
+		done
+		pxgn=(${xgn[*]})
+		pygn=(${ygn[*]})
+		## maneuver the GOALX enemies based on whether their goal is up
+		for (( i=0; i<$xgnc; i++ ))
+		do
+			if [ ${xgn[$i]} -ne ${xgw[$i]} ] #if the goal chasers arent where they want to be...
+			then
+				##do we maneuver or not?  only if order doesn't matter, or if the exit is currently up.
+				if [[ $ausorder -eq 0 || $reveall -eq 1 || ${xgw[$i]} -eq ${aus[0]} ]]
+				then
+					offset ${xgw[$i]} ${xgn[$i]} ##find offset from goal location
+					maxmag $xdif $ydif ##find the maximum of x or y displacements from hero
+					#echo "result is $result"
+					if [ $result -le 1 ] ## 0 or 1, equal or x is bigger, move in x direction
+					then
+						smartxmove ${xgn[$i]} ${xgw[$i]}
+						xgn[$i]=$result
+					else ##more distance in y dir:  move in y direction
+						smartymove ${xgn[$i]} ${xgw[$i]}
+						xgn[$i]=$result
+					fi
+					
+					duel $php $hp ${pxgn[$i]} ${xgn[$i]} ##if player tries to switch places with feisties, kill player
+					if [ $result -eq 1 ]; then hp=$php; fi
+				fi
+			fi
+			
+			
+		done
+		##now do GOALY enemies
+		for (( i=0; i<$ygnc; i++ ))
+		do
+			if [ ${ygn[$i]} -ne ${ygw[$i]} ] #if the goal chasers arent where they want to be...
+			then
+				if [[ $ausorder -eq 0 || $reveall -eq 1 || ${ygw[$i]} -eq ${aus[0]} ]]
+				then
+					offset ${ygw[$i]} ${ygn[$i]} ##find offset from goal location
+					maxmag $xdif $ydif ##find the maximum of x or y displacements from hero
+					#echo "result is $result"
+					if [ $result -eq 1 ] ## x is bigger, move in x direction
+					then
+						smartxmove ${ygn[$i]} ${ygw[$i]}
+						ygn[$i]=$result
+					else ##equal or more distance in y dir:  move in y direction
+						smartymove ${ygn[$i]} ${ygw[$i]}
+						ygn[$i]=$result
+					fi
+
+					duel $php $hp ${pygn[$i]} ${ygn[$i]} ##if player tries to switch places with feisties, kill player
+					if [ $result -eq 1 ]; then hp=$php; fi
+				fi
+			fi
+			
+		
+		done
+		
+		##Do duels between the feisties!
+		for (( i=0; i<$xenc; i++ )) ##x feisties weakness is x goalies
+		do
+			if [ ${xgn[$i]} -ne ${pxgn[$i]} ] ##if x feisty moves...
+			then
+				##duel with other X goalies to determine if X-feisty should stay at home.
+				hit=0
+				j=0
+				while [[ $j -lt $xgnc && $hit -eq 0 ]]
+				do
+					duel ${pxen[$i]} ${xen[$i]} ${pxgn[$j]} ${xgn[$j]}
+					if [ $result -eq 1 ]
+					then 
+						xen[$i]=${pxen[$i]} ##just set feisty down, goalie will kill him later
+						hit=1 ##close out of while loop, too
+					fi					
+					((j++))
+				done
+			fi
+		done
+		for (( i=0; i<$yenc; i++ )) ##y feisties weakness is t goalies
+		do
+			if [ ${ygn[$i]} -ne ${pygn[$i]} ] ##if x feisty moves...
+			then
+				##duel with other Y goalies to determine if y-feisty should stay at home.
+				hit=0
+				j=0
+				while [[ $j -lt $ygnc && $hit -eq 0 ]]
+				do
+					duel ${pyen[$i]} ${yen[$i]} ${pygn[$j]} ${ygn[$j]}
+					if [ $result -eq 1 ]
+					then 
+						yen[$i]=${pyen[$i]} ##just set feisty down, goalie will kill him later
+						hit=1 ##close out of while loop, too
+					fi					
+					((j++))
+				done
+			fi
+		done
+		
+		for (( i=0; i<$xsnc; i++ )) ##x psychics
+		do
+			if [ ${xsn[$i]} -ne ${pxsn[$i]} ] ##if psycher moves...
+			then
+				##duel with other X feisties to determine if X-psycher should stay at home.
+				hit=0
+				j=0
+				while [[ $j -lt $xenc && $hit -eq 0 ]]
+				do
+					duel ${pxsn[$i]} ${xsn[$i]} ${pxen[$j]} ${xen[$j]} ##psychics lose to regular guys
+					if [ $result -eq 1 ]
+					then 
+						xsn[$i]=${pxsn[$i]} ##just set psycher down, feisty will kill him later
+						hit=1 ##close out of while loop, too
+					fi					
+					((j++))
+				done
+			fi
+		done
+		for (( i=0; i<$ysnc; i++ )) ##y psychics
+		do
+			if [ ${ysn[$i]} -ne ${pysn[$i]} ]
+			then
+				##duel with other Y feisties to determine if Y-psycher should stay at home.
+				hit=0
+				j=0
+				while [[ $j -lt $yenc && $hit -eq 0 ]]
+				do
+					duel ${pysn[$i]} ${ysn[$i]} ${pyen[$j]} ${yen[$j]} #psychics lose to regular
+					if [ $result -eq 1 ]
+					then 
+						ysn[$i]=${pysn[$i]}
+						hit=1 ##close out of while loop, too
+					fi					
+					((j++))
+				done
+			fi
+				
+		done
+				
+		for (( i=0; i<$xgnc; i++ )) #x goalies
+		do
+			if [ ${xgn[$i]} -ne ${pxgn[$i]} ] ##if goalx moves...
+			then
+				hit=0
+				j=0
+				while [[ $j -lt $xsnc && $hit -eq 0 ]]
+				do
+					duel ${pxgn[$j]} ${xgn[$j]} ${pxsn[$i]} ${xsn[$i]} #goalies lose to psychics
+					if [ $result -eq 1 ]
+					then 
+						xgn[$i]=${pxgn[$i]} ##just set goalie down, psychic will kill him later
+						hit=1 ##close out of while loop, too
+					fi					
+					((j++))
+				done
+			fi
+		done
+		for (( i=0; i<$ygnc; i++ )) #y goalies
+		do
+			if [ ${ygn[$i]} -ne ${pygn[$i]} ] ##if goaly moves...
+			then
+				hit=0
+				j=0
+				while [[ $j -lt $ysnc && $hit -eq 0 ]]
+				do
+					duel ${pygn[$j]} ${ygn[$j]} ${pysn[$i]} ${ysn[$i]} #goalies lose to psychics
+					if [ $result -eq 1 ]
+					then 
+						ygn[$i]=${pygn[$i]} ##just set goalie down, psychic will kill him later
+						hit=1 ##close out of while loop, too
+					fi					
+					((j++))
+				done
+			fi
+		done
+		
+		
+		
+		##TAKE STEPS OUT OF PLACES!
+		if [ $hp -ne $php ] ##if player has moved locations this move.
+		then
+			((mc[$hp]--)) ##take out a step from that place!
+		fi
+		##now remove steps from feisties moving around
+		for (( i=0; i<$xenc; i++ ))
+		do
+			if [ ${xen[$i]} -ne ${pxen[$i]} ] ##if he moved,
+			then
+				((mc[${xen[$i]}]--))
+			fi
+		done
+		##now do y feisties enemies
+		for (( i=0; i<$yenc; i++ ))
+		do
+			if [ ${yen[$i]} -ne ${pyen[$i]} ] ##if he moved,
+			then
+				((mc[${yen[$i]}]--))
+			fi
+		done
+		##now remove steps from smart feisties moving around
+		for (( i=0; i<$xsnc; i++ ))
+		do
+			if [ ${xsn[$i]} -ne ${pxsn[$i]} ] ##if he moved,
+			then
+				((mc[${xsn[$i]}]--))
+			fi
+		done
+		##now do y smart enemies
+		for (( i=0; i<$ysnc; i++ ))
+		do
+			if [ ${ysn[$i]} -ne ${pysn[$i]} ] ##if he moved,
+			then
+				((mc[${ysn[$i]}]--))
+			fi
+		done
+		##now remove steps from goal X moving around
+		for (( i=0; i<$xgnc; i++ ))
+		do
+			if [ ${xgn[$i]} -ne ${pxgn[$i]} ] ##if he moved,
+			then
+				((mc[${xgn[$i]}]--))
+			fi
+		done
+		##now do goalY enemies
+		for (( i=0; i<$ygnc; i++ ))
+		do
+			if [ ${ygn[$i]} -ne ${pygn[$i]} ] ##if he moved,
+			then
+				((mc[${ygn[$i]}]--))
+			fi
+		done
+		
+		
+		##Kill enemies that ran into each other
+		##test for all three running into each other
+		i=0 #test all three in x dir
+		while [ $i -lt $xenc ]
+		do
+			j=0
+			while [ $j -lt $xsnc ]
+			do
+				k=0
+				while [ $k -lt $xgnc ]
+				do
+					if [[ ${xen[$i]} -eq ${xsn[$j]} && ${xsn[$j]} -eq ${xgn[$k]} ]]
+					then ##kill all three
+						remxen $i
+						remxsn $j
+						remxgn $k
+						((xkillcount++))
+						((xskillcount++))
+						((xgkillcount++))
+						message=$message"\nA collision of all X enemy types!  No survivors!"
+						((i--))
+						((j--))
+						((k--))
+					fi
+					((k++))
+				done
+				((j++))
+			done
+			((i++))
+		done
+		i=0 ##test all three in y dir
+		while [ $i -lt $yenc ]
+		do
+			j=0
+			while [ $j -lt $ysnc ]
+			do
+				k=0
+				while [ $k -lt $ygnc ]
+				do
+					if [[ ${yen[$i]} -eq ${ysn[$j]} && ${ysn[$j]} -eq ${ygn[$k]} ]]
+					then ##kill all three
+						remyen $i
+						remysn $j
+						remygn $k
+						((ykillcount++))
+						((yskillcount++))
+						((ygkillcount++))
+						message=$message"\nAn engagement of all Y enemy types!  3 casualties!"						
+						((i--))
+						((j--))
+						((k--))
+					fi
+					((k++))
+				done
+				((j++))
+			done
+			((i++))
+		done
+		
+		## KILL X feisties WHO RAN INTO X GOALIES
+		i=0
+		while [ $i -lt $xenc ]
+		do
+			membertest ${xen[$i]} ${xgn[*]} ##if a feisty guy ran into a goalie guy
+			if [ $result -eq 1 ]  
+			then ##kill off the feisty guy
+				remxen $i
+				message=$message"\nSome X-goalie ran over an X-feisty! -Roadkill alert."
+				((xkillcount++))
+			else
+				((i++))
+			fi
+		done
+		
+		## KILL Y feisties THAT RAN INTO Y goalies!
+		i=0
+		while [ $i -lt $yenc ]
+		do
+			membertest ${yen[$i]} ${ygn[*]} ##if a feisty guy ran into a goalie guy
+			if [ $result -eq 1 ]  
+			then ##kill off the feisty guy
+				remyen $i
+				message=$message"\nA Y-goalie tore through a Y-feisty!  !!"
+				((ykillcount++))
+			else
+				((i++))
+			fi
+		done
+
+		## KILL X PSYCHERS WHO RAN INTO X FEISTIES
+		i=0
+		while [ $i -lt $xsnc ]
+		do
+			membertest ${xsn[$i]} ${xen[*]} ##if a smart guy ran into a dumb guy
+			if [ $result -eq 1 ]  
+			then ##kill off the smart guy
+				remxsn $i
+				message=$message"\nSome X-feisty destroyed an X-psycher!  Lucky you!"
+				((xskillcount++))
+			else
+				((i++))
+			fi
+		done
+		
+		## KILL Y PSYCHERS THAT RAN INTO Y FEISTIES
+		i=0
+		while [ $i -lt $ysnc ]
+		do
+			membertest ${ysn[$i]} ${yen[*]} ##if a smart guy ran into a dumb guy
+			if [ $result -eq 1 ]  
+			then ##kill off the smart guy
+				remysn $i
+				message=$message"\nA Y-feisty totally dismangled a Y-psycher!  Gross!"
+				((yskillcount++))
+			else
+				((i++))
+			fi
+		done
+		
+		## KILL X goalies WHO RAN INTO X psychers
+		i=0
+		while [ $i -lt $xgnc ]
+		do
+			membertest ${xgn[$i]} ${xsn[*]} ##if a goalie guy ran into a smart guy
+			if [ $result -eq 1 ]  
+			then ##kill off the goalie guy
+				remxgn $i
+				message=$message"\nAn X-psycher frightened an X-goalie to death!"
+				((xgkillcount++))
+			else
+				((i++))
+			fi
+		done
+		
+		## KILL Y goalies THAT RAN INTO Y psychers
+		i=0
+		while [ $i -lt $ygnc ]
+		do
+			membertest ${ygn[$i]} ${ysn[*]} ##if a goalie guy ran into a smart guy
+			if [ $result -eq 1 ]  
+			then ##kill off the goalie guy
+				remygn $i
+				message=$message"\nA Y-psycher flayed a Y-goalie's mind!"
+				((ygkillcount++))
+			else
+				((i++))
+			fi
+		done
+
+		
+		##test whether player is killed by X and/or Y feisties
+		membertest $hp ${xen[*]}
+		killed="$result"
+		membertest $hp ${yen[*]}
+		killed=$killed"$result"
+		membertest $hp ${xsn[*]}
+		killed=$killed"$result"
+		membertest $hp ${ysn[*]}
+		killed=$killed"$result"
+		membertest $hp ${xgn[*]}
+		killed=$killed"$result"
+		membertest $hp ${ygn[*]}
+		killed=$killed"$result"
+		if [ ${mc[$hp]} -lt 0 ] ##did the dungeon kill you?
+		then
+			killed=$killed"1"
+		else
+			killed=$killed"0"
+		fi
+		
+		
+		i=0 ##kill off some feisties if necessary, after we figure out if they've killed us
+		while [ $i -lt $xenc ]
+		do
+			if [ ${mc[${xen[$i]}]} -lt 0 ] ##if we don't have the ability to move on that square...
+			then
+			##no more steps on that tile, kill enemy
+				remxen $i
+				((xkillcount++))
+				message="Killed some enemies!  (See Accomplishments below!)"
+			else
+				((i++))
+			fi
+		done
+		i=0 ##kill off some feisties if necessary
+		while [ $i -lt $yenc ]
+		do
+			if [ ${mc[${yen[$i]}]} -lt 0 ] ##if we don't have the ability to move on that square...
+			then
+			##no more steps on that tile, kill enemy
+				remyen $i
+				((ykillcount++))
+				message="Killed some enemies!  (See Accomplishments below!)"
+			else
+				((i++))
+			fi
+		done
+		i=0 ##kill off some SMART feisties if necessary
+		while [ $i -lt $xsnc ]
+		do
+			if [ ${mc[${xsn[$i]}]} -lt 0 ] ##if we don't have the ability to move on that square...
+			then
+			##no more steps on that tile, kill enemy
+				remxsn $i
+				((xskillcount++))
+				message="Killed some enemies!  (See Accomplishments below!)"				
+			else
+				((i++))
+			fi
+		done
+		i=0 ##kill off some feisties if necessary
+		while [ $i -lt $ysnc ]
+		do
+			if [ ${mc[${ysn[$i]}]} -lt 0 ] ##if we don't have the ability to move on that square...
+			then
+			##no more steps on that tile, kill enemy
+				remysn $i
+				((yskillcount++))
+				message="Killed some enemies!  (See Accomplishments below!)"				
+			else
+				((i++))
+			fi
+		done
+		i=0 ##kill off some GOALIE feisties if necessary
+		while [ $i -lt $xgnc ]
+		do
+			if [ ${mc[${xgn[$i]}]} -lt 0 ] ##if we don't have the ability to move on that square...
+			then
+			##no more steps on that tile, kill enemy
+				remxgn $i
+				((xgkillcount++))
+				message="Killed some enemies!  (See Accomplishments below!)"				
+			else
+				((i++))
+			fi
+		done
+		i=0 ##kill off some feisties if necessary
+		while [ $i -lt $ygnc ]
+		do
+			if [ ${mc[${ygn[$i]}]} -lt 0 ] ##if we don't have the ability to move on that square...
+			then
+			##no more steps on that tile, kill enemy
+				remygn $i
+				((ygkillcount++))
+				message="Killed some enemies!  (See Accomplishments below!)"				
+			else
+				((i++))
+			fi
+		done
+		
+		##if you were killed, over-write the other messages
+		case $killed in
+		1000000) #X killed you
+			life=0
+			message="The X-feisties overtook you."
+			;;
+		1000001) #x and dungeon killed you
+			life=0
+			message="The floor fell out beneath you and the X-feisties."
+			;;
+		0100000) ##Y killed, not X
+			life=0
+			message="The Y-feisties defeated you."
+			;;
+		0100001) #y killed and dungeon
+			life=0
+			message="Flaming spikes skewered you and the Y-feisties."
+			;;
+		0010000) #x psychers
+			life=0
+			message="The X-psychers make you relive your worst nightmares."		
+			;;
+		0010001) #x psychers and dungeon
+			life=0
+			message="You and the X-psychers are drowned."
+			;;
+		0001000) #y psychers
+			life=0
+			message="The Y-psychers feed on your brain."
+			;;
+		0001001) #y psychers and dungeon
+			life=0
+			message="Acid melts you and the Y-psychers to death."
+			;;
+		0000100) #x goalies
+			life=0
+			message="The X-goalies wipe the floor with you."		
+			;;
+		0000101) #x goalies and dungeon
+			life=0
+			message="The X-goalies and you are frozen for all eternity."
+			;;
+		0000010) #y goalies
+			life=0
+			message="The Y-goalies play Beethoven's fifth \non their newest ribcage xylophone."
+			;;
+		0000011) #y goalies and dungeon
+			life=0
+			message="A great nothing comes over you and the Y-goalies."
+			;;
+		0000110) # x and y goalies
+			life=0
+			message="The X and Y-goalies play hockey with your skull."
+			;;
+		0000111) # x and y goalies and dungeon
+			life=0
+			message="Laughing gas fills the room:  you and the \nX and Y goalies starve to death."
+			;;
+		0100100) # y feisties, x goalies
+			life=0
+			message="The Y-feisties and X-goalies team up to eat you."
+			;;
+		0100101) # y feisties, x goalies and dungeon
+			life=0
+			message="The air is sucked out of the room:  you and\nthe Y-feisties and X-goalies die of asphyxiation."
+			;;
+		1000010) # x feisties, y goalies
+			life=0
+			message="Resistance is futile against the overwhelming\npower of the X-feisties and Y-goalies.  Ouch."
+			;;
+		1000011) # x feisties, y goalies and dungeon
+			life=0
+			message="You had no time to grasp the fact that the room along with\nthe X-feisties and Y-goalies was teleported into the sun."
+			;;
+		0010010) # x psychers and y goalies
+			life=0
+			message="The X-psychers and Y-goalies beat you in a game\nof DDR.  To maintain your honor you commit seppuku."
+			;;
+		0010011) # x psychers, y goalies, and dungeon
+			life=0
+			message="The sword of judgment cuts you, the X-psychers\nand Y-goalies in half.  Maybe vertically."
+			;;
+		0001100) # y psychers, x goalies
+			life=0
+			message="The Y-psychers and X-goalies leave your corpse\nfor the rats.  To eat."
+			;;
+		0001101) # y psychers, x goalies, and dungeon
+			life=0
+			message="The force of gravity becomes unbearably strong:  all of the\nbones in you, the X-goalies and Y-psychers all break."
+			;;
+		1100000) #x and y
+			life=0
+			message="The X and Y-feisties devoured you."
+			;;
+		0011000) #x and y psychers
+			message="You're wearing a psychic hat!\n"$message
+			;;
+		0011001) #x and y psychers die from dungeon
+			message="The psychic hat saves you from doom!"
+			;;
+		1100001) #x and y and dungeon
+			life=0
+			message="You and all the X and Y-feisties were utterly\ndestroyed by the fickle will of the dungeon."
+			;;
+		1001000) #x feisty and y psycher
+			life=0
+			message="You were torn apart by vicious X-feisties\nand their psychic Y-cohorts.  An awful sight."
+			;;
+		1001001) #x feisty, y psycher and dungeon
+			life=0
+			message="The room fills with poisonous gas:  you, the\nX-feisties and Y-psychers die miserably."
+			;;
+		0110000) #x psycher and y feisty
+			life=0
+			message="The X-psychers feed on your fear as\nthe Y-feisties eat you alive.  Truly a nasty way to go."
+			;;
+		0110001) #x psycher, y feisty, and dungeon
+			life=0
+			message="You could not grasp the true form of\nthe dungeon's attack!  All room occupants die."
+			;;
+		0000001) ##just dungeon
+			life=0
+			message="The ceiling crushed you, I think.\nIt was over pretty quick."
+			;;
+
+		esac
+		
+		##check to see if goalies have won their goals!
+		for (( i=0; i<$xgnc; i++ ))
+		do
+			if [ ${xgn[$i]} -eq ${xgw[$i]} ] ##
+			then
+				if [ ${xgw[$i]} -eq ${aus[0]} ]
+				then
+					life=0
+					message="An X-goalie took your exit.  You remain\ntrapped in the dungeon forever!"
+				elif [[ $ausorder -eq 0 && $(membertest ${xgw[$i]} ${aus[*]}) -eq 1 ]]
+				then
+					life=0
+					message="An X-goalie took your exit.  You remain\ntrapped in the dungeon forever!"
+				fi
+			fi
+		done
+		
+		for (( i=0; i<$ygnc; i++ ))
+		do
+			if [ ${ygn[$i]} -eq ${ygw[$i]}  ] ##if we don't have the ability to move on that square...
+			then
+				if [ ${ygw[$i]} -eq ${aus[0]} ]
+				then
+					life=0
+					message="A Y-goalie beat you to the exit.  \nYou're stuck here for all eternity!"
+				elif [[ $ausorder -eq 0 && $(membertest ${ygw[$i]} ${aus[*]}) -eq 1 ]]
+				then
+					life=0
+					message="A Y-goalie beat you to the exit.  \nYou're stuck here for all eternity!"
+				fi
+			fi
+		done
+		
+		
+	fi
+
+
+else
+
+	if [ $win -eq 1 ]
+	then
+		echo "${rst}Level beated in $t moves."
+		accomplished ##write out accomplishments
+		if [ $t -le $fastwin ]
+		then
+			echo "Level won in as few moves as possible!"
+		fi
+		sumc #sum up all the mc on tiles, get $result:
+		if [ $result -eq 0 ]
+		then
+			echo "You have zeroed out this dungeon!"
+		fi
+		if [ $flag -eq 1 ]
+		then
+			echo "(Negative tiles count as zero when summing up dungeon.)"
+		fi
+		if [[ $result -eq 0 || $flag -eq 1 ]]
+		then
+			echo
+		fi
+		echo "Press $nextlvlvar for next level!"
+	else
+		if [ $t -eq 1 ]
+		then
+			echo "${rst}Died in 1 move.  RIP."
+		else
+			echo "${rst}Dead in $t moves."
+		fi
+		echo
+		echo "Press $resetvar to retry!"
+	fi
+	
+	echo -n "Reset ($resetvar), menu ($menuvar), or quit ($quitvar)? "
+
+	read -n 1 move
+	echo
+	case $move in
+	$resetvar) play=0;; #reset
+	
+	$menuvar) clear;play=0;menu=1 ;; #menu
+	$nextlvlvar) nextlvl ;; #next level
+	$quitvar) play=0;notquit=0 ;; ##quit
+
+	*) message="Invalid command";
+	esac
+
+fi
+move=""
+done ##exit highest loop (for turn by turn moves)
+
+done ##exit mid loop (for resetting level if necessary)
+
+done ##exit lowest loop (for returning to menu)
+
+
+unset me
+unset mn
+unset mw
+unset ms
+unset mc
+unset ein
+unset aus
+unset pxen
+unset pyen
+unset xen
+unset yen
+unset xsn
+unset ysn
+unset pxsn
+unset pysn
+unset xgn
+unset ygn
+unset pxgn
+unset pygn
+unset xgw
+unset ygw
+unset tim
+
+echo
